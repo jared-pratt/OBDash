@@ -1,0 +1,342 @@
+#pragma once
+#include <Arduino.h>
+#include <BLEDevice.h>
+#include <BLEUtils.h>
+#include <BLEClient.h>
+#include <BLEScan.h>
+#include <BLERemoteService.h>
+#include <BLERemoteCharacteristic.h>
+
+// BLE ELM327 / OBD-II reader.
+// This is for BLE adapters like "OBDBLE" that do NOT ask for a PIN.
+// It scans by Bluetooth name, connects, finds writable + notify characteristics,
+// then sends normal ELM327 AT / PID commands over BLE.
+
+#define ELM327_BT_NAME    "OBDBLE"
+#define OBD_SERVICE_UUID  "0000fff0-0000-1000-8000-00805f9b34fb"
+#define OBD_CHAR_UUID     "0000fff1-0000-1000-8000-00805f9b34fb"
+
+class OBDReader {
+public:
+  float rpm        = 0;
+  float speed_kph  = 0;
+  float coolant_c  = 0;
+  float load_pct   = 0;
+  float throttle   = 0;
+  float iat_c      = 0;
+  float maf_g_s    = 0;
+  float batt_v     = 12.6f;
+  bool  connected  = false;
+
+  bool begin() {
+    Serial.println();
+    Serial.println("===== BLE OBD START =====");
+    Serial.printf("Looking for BLE OBD device named: %s\n", ELM327_BT_NAME);
+
+    if (!_bleStarted) {
+      BLEDevice::init("CarCoach");
+      _bleStarted = true;
+    }
+
+    if (!_findDevice()) {
+      Serial.println("BLE scan failed: OBDBLE not found.");
+      connected = false;
+      return false;
+    }
+
+    Serial.printf("Found BLE OBD device at: %s\n", _addr.c_str());
+
+    if (!_connect()) {
+      Serial.println("BLE connect failed.");
+      connected = false;
+      return false;
+    }
+
+    Serial.println("BLE connected. Initialising ELM327...");
+    connected = _init();
+
+    if (connected) {
+      Serial.println("ELM327 init OK.");
+      Serial.println("===== BLE OBD READY =====");
+    } else {
+      Serial.println("ELM327 init failed.");
+    }
+
+    return connected;
+  }
+
+  void pollAll() {
+    if (!connected) return;
+
+    float v;
+
+    if (_readPID(0x0C, v)) rpm       = v;
+    if (_readPID(0x0D, v)) speed_kph = v;
+    if (_readPID(0x05, v)) coolant_c = v;
+    if (_readPID(0x04, v)) load_pct  = v;
+    if (_readPID(0x10, v)) maf_g_s   = v;
+  }
+
+private:
+  BLEClient* _client = nullptr;
+  BLERemoteCharacteristic* _writeChar  = nullptr;
+  BLERemoteCharacteristic* _notifyChar = nullptr;
+
+  String _addr;
+  String _rx;
+
+  bool _bleStarted = false;
+  bool _gotPrompt  = false;
+
+  static OBDReader* _active;
+
+  static void notifyCallback(
+    BLERemoteCharacteristic* characteristic,
+    uint8_t* data,
+    size_t length,
+    bool isNotify
+  ) {
+    if (!_active) return;
+
+    for (size_t i = 0; i < length; i++) {
+      char c = (char)data[i];
+      _active->_rx += c;
+      if (c == '>') {
+        _active->_gotPrompt = true;
+      }
+    }
+  }
+
+  bool _findDevice() {
+    class ScanCb : public BLEAdvertisedDeviceCallbacks {
+    public:
+      String* dest;
+      bool    found = false;
+      void onResult(BLEAdvertisedDevice d) override {
+        if (!found && d.haveName() &&
+            String(d.getName().c_str()) == ELM327_BT_NAME) {
+          *dest = String(d.getAddress().toString().c_str());
+          found = true;
+          BLEDevice::getScan()->stop();
+        }
+      }
+    };
+
+    ScanCb cb;
+    cb.dest = &_addr;
+
+    BLEScan* scan = BLEDevice::getScan();
+    scan->setAdvertisedDeviceCallbacks(&cb, false);
+    scan->setActiveScan(true);
+    scan->setInterval(100);
+    scan->setWindow(99);
+
+    Serial.println("Scanning for OBDBLE...");
+    scan->start(6, false);
+    scan->clearResults();
+
+    if (cb.found) Serial.printf("Found at %s\n", _addr.c_str());
+    else          Serial.println("OBDBLE not found.");
+    return cb.found;
+  }
+
+  bool _connect() {
+    _active = this;
+
+    _client = BLEDevice::createClient();
+
+    Serial.printf("Connecting to %s...\n", _addr.c_str());
+
+    if (!_client->connect(BLEAddress(_addr.c_str()))) {
+      Serial.println("client->connect() failed.");
+      return false;
+    }
+
+    Serial.println("Connected. Locating OBD service...");
+
+    _writeChar = nullptr;
+    _notifyChar = nullptr;
+
+    BLERemoteService* svc = _client->getService(BLEUUID(OBD_SERVICE_UUID));
+    if (!svc) {
+      Serial.println("OBD service (FFF0) not found.");
+      return false;
+    }
+
+    BLERemoteCharacteristic* ch = svc->getCharacteristic(BLEUUID(OBD_CHAR_UUID));
+    if (!ch) {
+      Serial.println("OBD characteristic (FFF1) not found.");
+      return false;
+    }
+
+    if (!ch->canWrite() && !ch->canWriteNoResponse()) {
+      Serial.println("FFF1 is not writable.");
+      return false;
+    }
+
+    if (!ch->canNotify()) {
+      Serial.println("FFF1 does not support notify.");
+      return false;
+    }
+
+    _writeChar  = ch;
+    _notifyChar = ch;
+
+    Serial.println("Using FFF1 for write + notify.");
+
+    _notifyChar->registerForNotify(notifyCallback);
+
+    delay(300);
+    return true;
+  }
+
+  bool _init() {
+    struct Cmd {
+      const char* txt;
+      uint32_t ms;
+    };
+
+    Cmd cmds[] = {
+      {"ATZ\r",    2500},
+      {"ATE0\r",   800},
+      {"ATL0\r",   800},
+      {"ATS0\r",   800},
+      {"ATH0\r",   800},
+      {"ATSP0\r", 1500},
+    };
+
+    for (auto& c : cmds) {
+      String r = _cmd(c.txt, c.ms);
+
+      // ATZ can sometimes be weird/slow, so don't fail only from ATZ.
+      if (r.length() == 0 && strcmp(c.txt, "ATZ\r") != 0) {
+        Serial.print("ELM init command failed: ");
+        Serial.println(c.txt);
+        return false;
+      }
+    }
+
+    // Let ATSP0 finish SEARCHING before pollAll() starts (up to 10s).
+    Serial.println("Waiting for protocol detection...");
+    _rx = "";
+    _gotPrompt = false;
+    _writeChar->writeValue((uint8_t*)"0100\r", 5, false);
+    uint32_t t = millis();
+    while (millis() - t < 10000 && !_gotPrompt) delay(10);
+    _rx = "";
+    _gotPrompt = false;
+    Serial.println("Protocol detection done.");
+
+    return true;
+  }
+
+  bool _readPID(uint8_t pid, float& out) {
+    char buf[8];
+    snprintf(buf, sizeof(buf), "01%02X\r", pid);
+
+    String resp = _cmd(buf, 250);
+
+    if (!resp.length()) return false;
+    if (resp.indexOf("NO DATA") >= 0) return false;
+    if (resp.indexOf("UNABLE") >= 0) return false;
+    if (resp.indexOf("STOPPED") >= 0) return false;
+    if (resp.indexOf("?") >= 0) return false;
+
+    bool ok = false;
+    float parsed = _parse(pid, resp, ok);
+
+    if (!ok) {
+      Serial.print("Parse failed for PID ");
+      Serial.print(pid, HEX);
+      Serial.print(" resp: ");
+      Serial.println(resp);
+      return false;
+    }
+
+    out = parsed;
+    return true;
+  }
+
+  String _cmd(const char* txt, uint32_t timeout_ms) {
+    if (!_client || !_client->isConnected() || !_writeChar) {
+      connected = false;
+      return "";
+    }
+
+    _rx = "";
+    _gotPrompt = false;
+
+    Serial.print("CMD: ");
+    Serial.print(txt);
+
+    _writeChar->writeValue((uint8_t*)txt, strlen(txt), false);
+
+    uint32_t t0 = millis();
+    while (millis() - t0 < timeout_ms) {
+      if (_gotPrompt) break;
+      delay(5);
+    }
+
+    String r = _rx;
+    r.replace("\r", "");
+    r.replace("\n", "");
+    r.replace(">", "");
+    r.trim();
+
+    Serial.print("RESP: ");
+    Serial.println(r);
+
+    return r;
+  }
+
+  String _cleanHex(String resp) {
+    resp.toUpperCase();
+    resp.replace(" ", "");
+    resp.replace("\r", "");
+    resp.replace("\n", "");
+    resp.replace(">", "");
+    resp.replace("SEARCHING...", "");
+    resp.replace("SEARCHING", "");
+    resp.trim();
+    return resp;
+  }
+
+  float _parse(uint8_t pid, String& resp, bool& ok) {
+    ok = false;
+
+    String clean = _cleanHex(resp);
+
+    char header[8];
+    snprintf(header, sizeof(header), "41%02X", pid);
+
+    int idx = clean.indexOf(header);
+    if (idx < 0) return 0;
+
+    String d = clean.substring(idx + 4);
+
+    auto byte_ = [&](int i) -> int {
+      int start = i * 2;
+      if (start + 2 > (int)d.length()) return 0;
+      return (int)strtol(d.substring(start, start + 2).c_str(), nullptr, 16);
+    };
+
+    int A = byte_(0);
+    int B = byte_(1);
+
+    ok = true;
+
+    switch (pid) {
+      case 0x04: return A * 100.0f / 255.0f;              // load %
+      case 0x05: return A - 40.0f;                        // coolant C
+      case 0x0C: return (float)((A << 8) | B) / 4.0f;     // RPM
+      case 0x0D: return (float)A;                         // speed kph
+      case 0x0F: return A - 40.0f;                        // intake air temp C
+      case 0x10: return (float)((A << 8) | B) / 100.0f;  // MAF g/s
+      case 0x11: return A * 100.0f / 255.0f;              // throttle %
+      case 0x42: return (float)(((A << 8) | B)) / 1000.0f;// control module voltage
+      default:   return (float)A;
+    }
+  }
+};
+
+OBDReader* OBDReader::_active = nullptr;
