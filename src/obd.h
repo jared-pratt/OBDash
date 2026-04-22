@@ -7,7 +7,9 @@
 #include <BLERemoteService.h>
 #include <BLERemoteCharacteristic.h>
 
-#define ELM327_BT_NAME  "OBDBLE"
+#define ELM327_BT_NAME   "OBDBLE"
+#define OBD_SERVICE_UUID "0000fff0-0000-1000-8000-00805f9b34fb"
+#define OBD_CHAR_UUID    "0000fff1-0000-1000-8000-00805f9b34fb"
 
 class OBDReader {
 public:
@@ -15,59 +17,54 @@ public:
   float throttle=0, iat_c=0, batt_v=12.6f;
   bool  connected=false;
 
-  bool begin() {
+  bool begin(){
     Serial.println("===== BLE OBD START =====");
-    if (!_bleStarted) { BLEDevice::init("CarCoach"); _bleStarted=true; }
-    if (!_findDevice()) { connected=false; return false; }
-    if (!_connect())    { connected=false; return false; }
-    Serial.println("BLE connected. Initialising ELM327...");
+    if(!_bleStarted){BLEDevice::init("CarCoach");_bleStarted=true;}
+    if(!_findDevice()){connected=false;return false;}
+    if(!_connect()){connected=false;return false;}
     connected=_init();
-    if (connected) Serial.println("ELM327 init OK.");
+    if(connected)Serial.println("ELM327 init OK.");
     return connected;
   }
 
-  void pollAll() {
-    if (!connected) return;
+  void pollAll(){
+    if(!connected)return;
     float v;
-    if (_readPID(0x0C,v)) rpm=v;
-    if (_readPID(0x0D,v)) speed_kph=v;
-    if (_readPID(0x05,v)) coolant_c=v;
-    if (_readPID(0x04,v)) load_pct=v;
+    if(_readPID(0x0C,v))rpm=v;
+    if(_readPID(0x0D,v))speed_kph=v;
+    if(_readPID(0x05,v))coolant_c=v;
+    if(_readPID(0x04,v))load_pct=v;
   }
 
 private:
   BLEClient* _client=nullptr;
   BLERemoteCharacteristic* _writeChar=nullptr;
   BLERemoteCharacteristic* _notifyChar=nullptr;
-  String _addr, _rx;
-  bool _bleStarted=false, _gotPrompt=false;
+  String _addr,_rx;
+  bool _bleStarted=false,_gotPrompt=false;
   static OBDReader* _active;
 
   static void notifyCallback(BLERemoteCharacteristic*,uint8_t* data,size_t length,bool){
     if(!_active)return;
-    for(size_t i=0;i<length;i++){
-      char c=(char)data[i]; _active->_rx+=c;
-      if(c=='>') _active->_gotPrompt=true;
-    }
+    for(size_t i=0;i<length;i++){char c=(char)data[i];_active->_rx+=c;if(c=='>')_active->_gotPrompt=true;}
   }
 
   bool _findDevice(){
     class ScanCb:public BLEAdvertisedDeviceCallbacks{
     public:
-      String* dest; bool found=false;
+      String* dest;bool found=false;
       void onResult(BLEAdvertisedDevice d)override{
         if(!found&&d.haveName()&&String(d.getName().c_str())==ELM327_BT_NAME){
-          *dest=String(d.getAddress().toString().c_str());
-          found=true; BLEDevice::getScan()->stop();
+          *dest=String(d.getAddress().toString().c_str());found=true;BLEDevice::getScan()->stop();
         }
       }
     };
-    ScanCb cb; cb.dest=&_addr;
+    ScanCb cb;cb.dest=&_addr;
     BLEScan* scan=BLEDevice::getScan();
     scan->setAdvertisedDeviceCallbacks(&cb,false);
-    scan->setActiveScan(true); scan->setInterval(100); scan->setWindow(99);
+    scan->setActiveScan(true);scan->setInterval(100);scan->setWindow(99);
     Serial.println("Scanning for OBDBLE...");
-    scan->start(6,false); scan->clearResults();
+    scan->start(6,false);scan->clearResults();
     return cb.found;
   }
 
@@ -75,33 +72,23 @@ private:
     _active=this;
     _client=BLEDevice::createClient();
     Serial.printf("Connecting to %s...\n",_addr.c_str());
-    if(!_client->connect(BLEAddress(_addr.c_str()))){
-      Serial.println("connect() failed."); return false;
-    }
-    Serial.println("Connected. Scanning all services for writable+notify chars...");
-    _writeChar=nullptr; _notifyChar=nullptr;
+    if(!_client->connect(BLEAddress(_addr.c_str()))){Serial.println("connect() failed.");return false;}
 
-    // Iterate all services alphabetically to find write and notify chars
-    std::map<std::string,BLERemoteService*>* svcMap=_client->getServices();
-    for(auto& sp:*svcMap){
-      BLERemoteService* svc=sp.second;
-      std::map<std::string,BLERemoteCharacteristic*>* cMap=svc->getCharacteristics();
-      for(auto& cp:*cMap){
-        BLERemoteCharacteristic* ch=cp.second;
-        if(!_writeChar&&(ch->canWrite()||ch->canWriteNoResponse())){
-          _writeChar=ch;
-          Serial.printf("  Write char: %s\n",ch->getUUID().toString().c_str());
-        }
-        if(!_notifyChar&&ch->canNotify()){
-          _notifyChar=ch;
-          Serial.printf("  Notify char: %s\n",ch->getUUID().toString().c_str());
-        }
-      }
-      if(_writeChar&&_notifyChar) break;
-    }
-    if(!_writeChar||!_notifyChar){Serial.println("Chars not found.");return false;}
+    Serial.println("Connected. Locating FFF0/FFF1...");
+    _writeChar=nullptr;_notifyChar=nullptr;
+
+    BLERemoteService* svc=_client->getService(BLEUUID(OBD_SERVICE_UUID));
+    if(!svc){Serial.println("FFF0 service not found.");return false;}
+
+    BLERemoteCharacteristic* ch=svc->getCharacteristic(BLEUUID(OBD_CHAR_UUID));
+    if(!ch){Serial.println("FFF1 characteristic not found.");return false;}
+    if(!ch->canWrite()&&!ch->canWriteNoResponse()){Serial.println("FFF1 not writable.");return false;}
+    if(!ch->canNotify()){Serial.println("FFF1 no notify.");return false;}
+
+    _writeChar=_notifyChar=ch;
+    Serial.println("Using FFF1 for write + notify.");
     _notifyChar->registerForNotify(notifyCallback);
-    delay(300); return true;
+    delay(300);return true;
   }
 
   bool _init(){
@@ -109,21 +96,19 @@ private:
     Cmd cmds[]={{"ATZ\r",2500},{"ATE0\r",800},{"ATL0\r",800},{"ATS0\r",800},{"ATH0\r",800},{"ATSP0\r",1500}};
     for(auto& c:cmds){
       String r=_cmd(c.txt,c.ms);
-      if(r.length()==0&&strcmp(c.txt,"ATZ\r")!=0){
-        Serial.printf("ELM init failed: %s\n",c.txt); return false;
-      }
+      if(r.length()==0&&strcmp(c.txt,"ATZ\r")!=0){Serial.printf("ELM init failed: %s\n",c.txt);return false;}
     }
     return true;
   }
 
   bool _readPID(uint8_t pid,float& out){
-    char buf[8]; snprintf(buf,sizeof(buf),"01%02X\r",pid);
+    char buf[8];snprintf(buf,sizeof(buf),"01%02X\r",pid);
     String resp=_cmd(buf,250);
     if(!resp.length())return false;
     if(resp.indexOf("NO DATA")>=0||resp.indexOf("UNABLE")>=0||
-       resp.indexOf("STOPPED")>=0||resp.indexOf("?")>=0) return false;
-    bool ok=false; float parsed=_parse(pid,resp,ok);
-    if(!ok)return false; out=parsed; return true;
+       resp.indexOf("STOPPED")>=0||resp.indexOf("?")>=0)return false;
+    bool ok=false;float parsed=_parse(pid,resp,ok);
+    if(!ok)return false;out=parsed;return true;
   }
 
   String _cmd(const char* txt,uint32_t timeout_ms){
@@ -132,34 +117,34 @@ private:
     _writeChar->writeValue((uint8_t*)txt,strlen(txt),false);
     uint32_t t0=millis();
     while(millis()-t0<timeout_ms){if(_gotPrompt)break;delay(5);}
-    String r=_rx; r.replace("\r","");r.replace("\n","");r.replace(">","");r.trim();
+    String r=_rx;r.replace("\r","");r.replace("\n","");r.replace(">","");r.trim();
     return r;
   }
 
   String _cleanHex(String resp){
     resp.toUpperCase();resp.replace(" ","");resp.replace("\r","");resp.replace("\n","");
     resp.replace(">","");resp.replace("SEARCHING...","");resp.replace("SEARCHING","");
-    resp.trim(); return resp;
+    resp.trim();return resp;
   }
 
   float _parse(uint8_t pid,String& resp,bool& ok){
-    ok=false; String clean=_cleanHex(resp);
-    char header[8]; snprintf(header,sizeof(header),"41%02X",pid);
-    int idx=clean.indexOf(header); if(idx<0)return 0;
+    ok=false;String clean=_cleanHex(resp);
+    char header[8];snprintf(header,sizeof(header),"41%02X",pid);
+    int idx=clean.indexOf(header);if(idx<0)return 0;
     String d=clean.substring(idx+4);
     auto byte_=[&](int i)->int{
-      int s=i*2; if(s+2>(int)d.length())return 0;
-      return (int)strtol(d.substring(s,s+2).c_str(),nullptr,16);
+      int s=i*2;if(s+2>(int)d.length())return 0;
+      return(int)strtol(d.substring(s,s+2).c_str(),nullptr,16);
     };
-    int A=byte_(0),B=byte_(1); ok=true;
+    int A=byte_(0),B=byte_(1);ok=true;
     switch(pid){
-      case 0x04: return A*100.0f/255.0f;
-      case 0x05: return A-40.0f;
-      case 0x0C: return (float)((A<<8)|B)/4.0f;
-      case 0x0D: return (float)A;
-      case 0x0F: return A-40.0f;
-      case 0x11: return A*100.0f/255.0f;
-      default:   return (float)A;
+      case 0x04:return A*100.0f/255.0f;
+      case 0x05:return A-40.0f;
+      case 0x0C:return(float)((A<<8)|B)/4.0f;
+      case 0x0D:return(float)A;
+      case 0x0F:return A-40.0f;
+      case 0x11:return A*100.0f/255.0f;
+      default:  return(float)A;
     }
   }
 };
