@@ -2,6 +2,7 @@
 #include <LovyanGFX.hpp>
 #include "config.h"
 #include "corolla_bitmap.h"
+#include "obd.h"
 
 template<uint8_t CS_PIN>
 class GC9A01 : public lgfx::LGFX_Device {
@@ -29,6 +30,7 @@ static GC9A01<TFT1_CS> disp1;
 static GC9A01<TFT2_CS> disp2;
 static GC9A01<TFT3_CS> disp3;
 static LGFX_Sprite spr(&disp1);
+static OBDReader obd;
 
 static void drawDialLabels(int cx, int cy, int radius, float minVal, float maxVal, int steps,
                            const char* suffix, uint32_t col,
@@ -252,6 +254,30 @@ static void bootScreen(){
   delay(2000);
 }
 
+void obdTask(void*){
+  obd.begin();
+  for(;;){
+    if(!obd.connected){ vTaskDelay(pdMS_TO_TICKS(100)); continue; }
+    obd.pollAll();
+
+    float wheelRPM=(obd.speed_kph>1.0f)?obd.speed_kph/(TIRE_CIRC_KM*60.0f):0;
+    float ratio=(wheelRPM>0&&obd.rpm>100)?obd.rpm/(wheelRPM*4.312f):0;
+    int gear=0;
+    if(ratio>0){
+      float best=9999.0f;
+      for(int i=0;i<NUM_GEARS;i++){
+        float diff=fabsf(ratio-GEAR_RATIOS[i]);
+        if(diff<best){best=diff;gear=i+1;}
+      }
+      if(best>2.0f) gear=0;
+    }
+    xSemaphoreTake(dataMutex,portMAX_DELAY);
+    carData={obd.rpm,obd.speed_kph,obd.coolant_c,obd.load_pct,
+             obd.throttle,obd.iat_c,obd.batt_v,gear,true};
+    xSemaphoreGive(dataMutex);
+  }
+}
+
 void displayTask(void*){
   for(;;){
     checkButtons();
@@ -285,5 +311,6 @@ void setup(){
   bootScreen();
   dataMutex=xSemaphoreCreateMutex();
   xTaskCreatePinnedToCore(displayTask,"display",8192,nullptr,1,nullptr,1);
+  xTaskCreatePinnedToCore(obdTask,"obd",4096,nullptr,1,nullptr,0);
 }
 void loop(){vTaskDelay(portMAX_DELAY);}
