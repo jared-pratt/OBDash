@@ -255,22 +255,27 @@ static void bootScreen(){
 }
 
 void obdTask(void*){
-  obd.begin();
   for(;;){
-    if(!obd.connected){ vTaskDelay(pdMS_TO_TICKS(100)); continue; }
+    if(!obd.connected){
+      obd.begin();
+      if(!obd.connected){ vTaskDelay(pdMS_TO_TICKS(2000)); continue; }
+    }
     obd.pollAll();
 
-    float wheelRPM=(obd.speed_kph>1.0f)?obd.speed_kph/(TIRE_CIRC_KM*60.0f):0;
-    float ratio=(wheelRPM>0&&obd.rpm>100)?obd.rpm/(wheelRPM*4.312f):0;
-    int gear=0;
-    if(ratio>0){
-      float best=9999.0f;
-      for(int i=0;i<NUM_GEARS;i++){
-        float diff=fabsf(ratio-GEAR_RATIOS[i]);
-        if(diff<best){best=diff;gear=i+1;}
-      }
-      if(best>2.0f) gear=0;
-    }
+    static int confirmedGear=0,pendingGear=0,pendingCount=0;
+    float mph=obd.speed_kph*0.621371f;
+    int raw=0;
+    if(mph<3.0f)                         raw=0;
+    else if(obd.rpm<1000&&mph>10.0f)     raw=0;
+    else if(mph<22.0f) raw=1;
+    else if(mph<32.0f) raw=2;
+    else if(mph<46.0f) raw=3;
+    else if(mph<62.0f) raw=4;
+    else               raw=5;
+
+    if(raw==pendingGear){if(++pendingCount>=2)confirmedGear=raw;}
+    else                {pendingGear=raw;pendingCount=0;}
+    int gear=confirmedGear;
     xSemaphoreTake(dataMutex,portMAX_DELAY);
     carData={obd.rpm,obd.speed_kph,obd.coolant_c,obd.load_pct,
              obd.throttle,obd.iat_c,obd.batt_v,gear,true};
