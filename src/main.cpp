@@ -256,6 +256,29 @@ static void renderRaw(const CarData& d){
   modeDots(2);
 }
 
+static void bootAnimation(){
+  const int carY=103, roadY=162, step=12;
+  lgfx::LGFX_Device* disps[3]={&disp1,&disp2,&disp3};
+  for(int vx=-(int)COROLLA_W;vx<=720;vx+=step){
+    for(int d=0;d<3;d++){
+      int localX=vx-d*240;
+      spr.fillScreen(C(5,5,10));
+      spr.fillRect(0,roadY,240,240-roadY,C(12,12,12));
+      spr.drawFastHLine(0,roadY,240,C(65,65,65));
+      for(int i=0;i<4;i++){
+        int lineEnd=localX-4-i*4,lineLen=22+i*10,lineStart=lineEnd-lineLen,ly=carY+22+i*6;
+        int ds=max(0,lineStart),de=min(239,lineEnd);
+        if(ds<de) spr.drawFastHLine(ds,ly,de-ds,C(160-i*35,160-i*35,160-i*35));
+      }
+      draw1BPPBitmap(localX,carY,corolla_bits,COROLLA_W,COROLLA_H,TFT_WHITE,false);
+      spr.pushSprite(disps[d],0,0);
+    }
+    delay(20);
+  }
+  spr.fillScreen(TFT_BLACK);
+  for(int d=0;d<3;d++) spr.pushSprite(disps[d],0,0);
+}
+
 static void bootScreen(){
   lgfx::LGFX_Device* disps[3]={&disp1,&disp2,&disp3};
   for(int i=0;i<3;i++){
@@ -336,7 +359,7 @@ void setup(){
   spr.setColorDepth(8);
   if(!spr.createSprite(240,240)){Serial.println("Sprite alloc failed!");while(true)delay(1000);}
   Serial.printf("Free heap: %d bytes\n",ESP.getFreeHeap());
-  bootScreen();
+  bootAnimation();
   dataMutex=xSemaphoreCreateMutex();
   xTaskCreatePinnedToCore(displayTask,"display",8192,nullptr,1,nullptr,1);
   xTaskCreatePinnedToCore(obdTask,"obd",8192,nullptr,1,nullptr,0);
