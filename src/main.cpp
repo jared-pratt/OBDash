@@ -51,6 +51,10 @@ struct CarData {
   int gear; bool obd_ok;
 } carData;
 static volatile uint8_t mode1=0, mode3=0;
+
+static constexpr float READY_MIN_TEMP_C=60.0f;
+static constexpr float WARN_TEMP_C=105.0f;
+static constexpr float WARN_RPM=6000.0f;
 static uint32_t lp1=0, lp3=0;
 static void checkButtons(){
   uint32_t n=millis();
@@ -149,6 +153,15 @@ static void draw1BPPBitmap(int x,int y,const uint8_t* data,int w,int h,uint32_t 
     }
   }
 }
+
+static void drawAlert(const String& line1,const String& line2,uint32_t bg,uint32_t fg){
+  spr.fillCircle(120,120,85,bg);
+  spr.setTextDatum(textdatum_t::middle_center);
+  spr.setTextColor(fg); spr.setTextSize(2);
+  spr.drawString(line1,120,100);
+  spr.drawString(line2,120,138);
+}
+
 static void renderCorollaScene(const CarData& d){
   spr.fillScreen(TFT_BLACK);
   const int horizonY=160;
@@ -292,12 +305,22 @@ void displayTask(void*){
     CarData snap;
     xSemaphoreTake(dataMutex,portMAX_DELAY);snap=carData;xSemaphoreGive(dataMutex);
     updateCenterSceneMotion(snap.speed_kph);
+
+    bool readyToDrive=snap.obd_ok&&snap.coolant_c>=READY_MIN_TEMP_C&&snap.rpm>400.0f&&snap.speed_kph<3.0f;
+    bool warnTemp=snap.obd_ok&&snap.coolant_c>WARN_TEMP_C&&snap.rpm>400.0f;
+    bool warnRPM=snap.obd_ok&&snap.rpm>WARN_RPM;
+    auto applyAlert=[&](){
+      if(warnRPM)           drawAlert("HIGH RPM",String((int)snap.rpm)+" rpm",C(200,80,0),TFT_WHITE);
+      else if(warnTemp)     drawAlert("OVERHEAT",String((int)snap.coolant_c)+"C",C(220,0,0),TFT_WHITE);
+      else if(readyToDrive) drawAlert("Ready to","drive.",C(0,180,60),TFT_BLACK);
+    };
+
     switch(mode1){case 0:renderRPM(snap);break;case 1:renderLoad(snap);break;case 2:renderIAT(snap);break;}
-    spr.pushSprite(&disp1,0,0);
+    applyAlert(); spr.pushSprite(&disp1,0,0);
     renderCorollaScene(snap);
-    spr.pushSprite(&disp2,0,0);
+    applyAlert(); spr.pushSprite(&disp2,0,0);
     switch(mode3){case 0:renderSystems(snap);break;case 1:renderVoltage(snap);break;case 2:renderRaw(snap);break;}
-    spr.pushSprite(&disp3,0,0);
+    applyAlert(); spr.pushSprite(&disp3,0,0);
     vTaskDelay(pdMS_TO_TICKS(33));
   }
 }
