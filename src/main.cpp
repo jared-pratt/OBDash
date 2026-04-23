@@ -311,6 +311,6 @@ void setup(){
   bootScreen();
   dataMutex=xSemaphoreCreateMutex();
   xTaskCreatePinnedToCore(displayTask,"display",8192,nullptr,1,nullptr,1);
-  xTaskCreatePinnedToCore(obdTask,"obd",4096,nullptr,1,nullptr,0);
+  xTaskCreatePinnedToCore(obdTask,"obd",8192,nullptr,1,nullptr,0);
 }
 void loop(){vTaskDelay(portMAX_DELAY);}

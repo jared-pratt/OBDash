@@ -7,23 +7,27 @@
 #include <BLERemoteService.h>
 #include <BLERemoteCharacteristic.h>
 
-#define ELM327_BT_NAME   "OBDBLE"
-#define OBD_SERVICE_UUID "0000fff0-0000-1000-8000-00805f9b34fb"
-#define OBD_CHAR_UUID    "0000fff1-0000-1000-8000-00805f9b34fb"
+#define ELM327_BT_NAME    "OBDBLE"
+#define OBD_SERVICE_UUID  "0000fff0-0000-1000-8000-00805f9b34fb"
+#define OBD_CHAR_UUID     "0000fff1-0000-1000-8000-00805f9b34fb"
 
 class OBDReader {
 public:
-  float rpm=0, speed_kph=0, coolant_c=0, load_pct=0;
-  float throttle=0, iat_c=0, batt_v=12.6f;
+  float rpm=0,speed_kph=0,coolant_c=0,load_pct=0;
+  float throttle=0,iat_c=0,batt_v=12.6f;
   bool  connected=false;
 
   bool begin(){
-    Serial.println("===== BLE OBD START =====");
+    Serial.println(); Serial.println("===== BLE OBD START =====");
+    Serial.printf("Looking for BLE OBD device named: %s\n",ELM327_BT_NAME);
     if(!_bleStarted){BLEDevice::init("CarCoach");_bleStarted=true;}
-    if(!_findDevice()){connected=false;return false;}
-    if(!_connect()){connected=false;return false;}
+    if(!_findDevice()){Serial.println("BLE scan failed.");connected=false;return false;}
+    Serial.printf("Found BLE OBD device at: %s\n",_addr.c_str());
+    if(!_connect()){Serial.println("BLE connect failed.");connected=false;return false;}
+    Serial.println("BLE connected. Initialising ELM327...");
     connected=_init();
-    if(connected)Serial.println("ELM327 init OK.");
+    if(connected){Serial.println("ELM327 init OK.");Serial.println("===== BLE OBD READY =====");}
+    else Serial.println("ELM327 init failed.");
     return connected;
   }
 
@@ -65,6 +69,8 @@ private:
     scan->setActiveScan(true);scan->setInterval(100);scan->setWindow(99);
     Serial.println("Scanning for OBDBLE...");
     scan->start(6,false);scan->clearResults();
+    if(cb.found)Serial.printf("Found at %s\n",_addr.c_str());
+    else         Serial.println("OBDBLE not found.");
     return cb.found;
   }
 
@@ -72,19 +78,15 @@ private:
     _active=this;
     _client=BLEDevice::createClient();
     Serial.printf("Connecting to %s...\n",_addr.c_str());
-    if(!_client->connect(BLEAddress(_addr.c_str()))){Serial.println("connect() failed.");return false;}
-
-    Serial.println("Connected. Locating FFF0/FFF1...");
+    if(!_client->connect(BLEAddress(_addr.c_str()))){Serial.println("client->connect() failed.");return false;}
+    Serial.println("Connected. Locating OBD service...");
     _writeChar=nullptr;_notifyChar=nullptr;
-
     BLERemoteService* svc=_client->getService(BLEUUID(OBD_SERVICE_UUID));
-    if(!svc){Serial.println("FFF0 service not found.");return false;}
-
+    if(!svc){Serial.println("OBD service (FFF0) not found.");return false;}
     BLERemoteCharacteristic* ch=svc->getCharacteristic(BLEUUID(OBD_CHAR_UUID));
-    if(!ch){Serial.println("FFF1 characteristic not found.");return false;}
-    if(!ch->canWrite()&&!ch->canWriteNoResponse()){Serial.println("FFF1 not writable.");return false;}
-    if(!ch->canNotify()){Serial.println("FFF1 no notify.");return false;}
-
+    if(!ch){Serial.println("OBD characteristic (FFF1) not found.");return false;}
+    if(!ch->canWrite()&&!ch->canWriteNoResponse()){Serial.println("FFF1 is not writable.");return false;}
+    if(!ch->canNotify()){Serial.println("FFF1 does not support notify.");return false;}
     _writeChar=_notifyChar=ch;
     Serial.println("Using FFF1 for write + notify.");
     _notifyChar->registerForNotify(notifyCallback);
@@ -96,8 +98,18 @@ private:
     Cmd cmds[]={{"ATZ\r",2500},{"ATE0\r",800},{"ATL0\r",800},{"ATS0\r",800},{"ATH0\r",800},{"ATSP0\r",1500}};
     for(auto& c:cmds){
       String r=_cmd(c.txt,c.ms);
-      if(r.length()==0&&strcmp(c.txt,"ATZ\r")!=0){Serial.printf("ELM init failed: %s\n",c.txt);return false;}
+      if(r.length()==0&&strcmp(c.txt,"ATZ\r")!=0){
+        Serial.print("ELM init command failed: ");Serial.println(c.txt);return false;
+      }
     }
+    // Warm-up query: let ATSP0 finish SEARCHING before pollAll() starts (up to 10s)
+    Serial.println("Waiting for protocol detection...");
+    _rx="";_gotPrompt=false;
+    _writeChar->writeValue((uint8_t*)"0100\r",5,false);
+    uint32_t t=millis();
+    while(millis()-t<10000&&!_gotPrompt)delay(10);
+    _rx="";_gotPrompt=false;
+    Serial.println("Protocol detection done.");
     return true;
   }
 
@@ -108,16 +120,22 @@ private:
     if(resp.indexOf("NO DATA")>=0||resp.indexOf("UNABLE")>=0||
        resp.indexOf("STOPPED")>=0||resp.indexOf("?")>=0)return false;
     bool ok=false;float parsed=_parse(pid,resp,ok);
-    if(!ok)return false;out=parsed;return true;
+    if(!ok){
+      Serial.print("Parse failed for PID ");Serial.print(pid,HEX);
+      Serial.print(" resp: ");Serial.println(resp);return false;
+    }
+    out=parsed;return true;
   }
 
   String _cmd(const char* txt,uint32_t timeout_ms){
     if(!_client||!_client->isConnected()||!_writeChar){connected=false;return "";}
     _rx="";_gotPrompt=false;
+    Serial.print("CMD: ");Serial.print(txt);
     _writeChar->writeValue((uint8_t*)txt,strlen(txt),false);
     uint32_t t0=millis();
     while(millis()-t0<timeout_ms){if(_gotPrompt)break;delay(5);}
     String r=_rx;r.replace("\r","");r.replace("\n","");r.replace(">","");r.trim();
+    Serial.print("RESP: ");Serial.println(r);
     return r;
   }
 
@@ -144,6 +162,7 @@ private:
       case 0x0D:return(float)A;
       case 0x0F:return A-40.0f;
       case 0x11:return A*100.0f/255.0f;
+      case 0x42:return(float)(((A<<8)|B))/1000.0f;
       default:  return(float)A;
     }
   }
