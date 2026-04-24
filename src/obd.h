@@ -31,16 +31,17 @@ public:
     return connected;
   }
 
-  void pollAll(){
+  // flags bits: 0=RPM 1=speed 2=coolant 3=load 4=throttle 5=MAF 6=battery
+  void pollAll(uint8_t flags=0x7F){
     if(!connected)return;
     float v;
-    if(_readPID(0x0C,v))rpm=v;
-    if(_readPID(0x0D,v))speed_kph=v;
-    if(_readPID(0x05,v))coolant_c=v;
-    if(_readPID(0x04,v))load_pct=v;
-    if(_readPID(0x11,v))throttle=v;
-    if(_readPID(0x10,v))maf_g_s=v;
-    if(_readPID(0x42,v))batt_v=v;
+    if((flags&0x01)&&_readPID(0x0C,v))rpm=v;
+    if((flags&0x02)&&_readPID(0x0D,v))speed_kph=v;
+    if((flags&0x04)&&_readPID(0x05,v))coolant_c=v;
+    if((flags&0x08)&&_readPID(0x04,v))load_pct=v;
+    if((flags&0x10)&&_readPID(0x11,v))throttle=v;
+    if((flags&0x20)&&_readPID(0x10,v))maf_g_s=v;
+    if((flags&0x40)&&_readPID(0x42,v))batt_v=v;
   }
 
 private:
@@ -98,7 +99,8 @@ private:
 
   bool _init(){
     struct Cmd{const char* txt;uint32_t ms;};
-    Cmd cmds[]={{"ATZ\r",2500},{"ATE0\r",800},{"ATL0\r",800},{"ATS0\r",800},{"ATH0\r",800},{"ATSP0\r",1500}};
+    // ATST 19 = 25×4ms = 100ms ECU response timeout (default ~200ms); speeds up NO DATA responses
+    Cmd cmds[]={{"ATZ\r",2500},{"ATE0\r",800},{"ATL0\r",800},{"ATS0\r",800},{"ATH0\r",800},{"ATST 19\r",500},{"ATSP0\r",1500}};
     for(auto& c:cmds){
       String r=_cmd(c.txt,c.ms);
       if(r.length()==0&&strcmp(c.txt,"ATZ\r")!=0){
@@ -118,7 +120,7 @@ private:
 
   bool _readPID(uint8_t pid,float& out){
     char buf[8];snprintf(buf,sizeof(buf),"01%02X\r",pid);
-    String resp=_cmd(buf,250);
+    String resp=_cmd(buf,150);
     if(!resp.length())return false;
     if(resp.indexOf("NO DATA")>=0||resp.indexOf("UNABLE")>=0||
        resp.indexOf("STOPPED")>=0||resp.indexOf("?")>=0)return false;

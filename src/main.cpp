@@ -323,12 +323,20 @@ static void bootScreen(){
 }
 
 void obdTask(void*){
+  static uint32_t lastBatt=0;
   for(;;){
     if(!obd.connected){
       obd.begin();
       if(!obd.connected){ vTaskDelay(pdMS_TO_TICKS(2000)); continue; }
     }
-    obd.pollAll();
+    // Only poll PIDs needed by the currently visible screens
+    uint8_t flags=0x03;                          // RPM + speed always (gear detection)
+    if(mode1==0||mode1==1) flags|=0x08;          // load (RPM bar + Load screen)
+    if(mode1==2||mode3==2) flags|=0x20;          // MAF (MPG screens)
+    if(mode2==1)           flags|=0x10;          // throttle
+    if(mode3==0)           flags|=0x04;          // coolant
+    if(millis()-lastBatt>10000){flags|=0x40;lastBatt=millis();} // battery every 10s
+    obd.pollAll(flags);
 
     static int confirmedGear=0,pendingGear=0,pendingCount=0;
     float mph=obd.speed_kph*0.621371f;
@@ -352,6 +360,8 @@ void obdTask(void*){
 }
 
 void displayTask(void*){
+  static CarData smooth={};
+  static bool smoothInit=false;
   for(;;){
     checkButtons();
 #if DEMO_MODE
@@ -359,14 +369,29 @@ void displayTask(void*){
 #endif
     CarData snap;
     xSemaphoreTake(dataMutex,portMAX_DELAY);snap=carData;xSemaphoreGive(dataMutex);
-    updateCenterSceneMotion(snap.speed_kph);
+
+    // Seed smoother on first valid OBD frame to avoid animating from zero
+    if(!smoothInit&&snap.obd_ok){smooth=snap;smoothInit=true;}
+
+    // Lerp display values toward latest OBD data each frame (~0.25 closes 25% of gap)
+    const float k=0.25f;
+    smooth.rpm       +=( snap.rpm       -smooth.rpm       )*k;
+    smooth.speed_kph +=( snap.speed_kph -smooth.speed_kph )*k;
+    smooth.load_pct  +=( snap.load_pct  -smooth.load_pct  )*k;
+    smooth.coolant_c +=( snap.coolant_c -smooth.coolant_c )*k;
+    smooth.throttle  +=( snap.throttle  -smooth.throttle  )*k;
+    smooth.maf_g_s   +=( snap.maf_g_s   -smooth.maf_g_s   )*k;
+    smooth.batt_v    +=( snap.batt_v    -smooth.batt_v    )*k;
+    smooth.gear=snap.gear; smooth.obd_ok=snap.obd_ok;
+
+    updateCenterSceneMotion(smooth.speed_kph);
 
     bool warnTemp=snap.obd_ok&&snap.coolant_c>WARN_TEMP_C&&snap.rpm>400.0f;
     auto applyAlert=[&](){
       if(warnTemp) drawAlert("OVERHEAT",String((int)snap.coolant_c)+"C",C(220,0,0),TFT_WHITE);
     };
 
-    // Update average MPG while driving; persist to NVS every 300 samples
+    // Update average MPG with raw snap values (not smoothed)
     {
       float mph2=snap.speed_kph*0.621371f;
       if(mph2>5.0f&&snap.maf_g_s>0.1f){
@@ -381,13 +406,13 @@ void displayTask(void*){
       }
     }
 
-    switch(mode1){case 0:renderRPM(snap);break;case 1:renderLoad(snap);break;case 2:renderMPG(snap);break;}
+    switch(mode1){case 0:renderRPM(smooth);break;case 1:renderLoad(smooth);break;case 2:renderMPG(smooth);break;}
     applyAlert(); spr.pushSprite(&disp1,0,0);
-    switch(mode2){case 0:renderCorollaScene(snap);break;case 1:renderThrottle(snap);break;}
+    switch(mode2){case 0:renderCorollaScene(smooth);break;case 1:renderThrottle(smooth);break;}
     applyAlert(); spr.pushSprite(&disp2,0,0);
-    switch(mode3){case 0:renderSystems(snap);break;case 1:renderVoltage(snap);break;case 2:renderAvgMPG(snap);break;}
+    switch(mode3){case 0:renderSystems(smooth);break;case 1:renderVoltage(smooth);break;case 2:renderAvgMPG(smooth);break;}
     applyAlert(); spr.pushSprite(&disp3,0,0);
-    vTaskDelay(pdMS_TO_TICKS(33));
+    vTaskDelay(pdMS_TO_TICKS(5));
   }
 }
 void setup(){
