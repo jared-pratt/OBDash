@@ -257,7 +257,7 @@ static void renderRaw(const CarData& d){
 }
 
 static void bootAnimation(){
-  const int carY=103, roadY=162, step=12;
+  const int carY=103, roadY=162, step=22;
   lgfx::LGFX_Device* disps[3]={&disp1,&disp2,&disp3};
   for(int vx=-(int)COROLLA_W;vx<=720;vx+=step){
     for(int d=0;d<3;d++){
@@ -270,7 +270,7 @@ static void bootAnimation(){
         int ds=max(0,lineStart),de=min(239,lineEnd);
         if(ds<de) spr.drawFastHLine(ds,ly,de-ds,C(160-i*35,160-i*35,160-i*35));
       }
-      draw1BPPBitmap(localX,carY,corolla_bits,COROLLA_W,COROLLA_H,TFT_WHITE,false);
+      draw1BPPBitmap(localX,carY,corolla_bits,COROLLA_W,COROLLA_H,TFT_WHITE,true);
       spr.pushSprite(disps[d],0,0);
     }
     delay(20);
