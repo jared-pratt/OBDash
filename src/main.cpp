@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <LovyanGFX.hpp>
+#include <Preferences.h>
 #include "config.h"
 #include "corolla_bitmap.h"
 #include "obd.h"
@@ -53,7 +54,6 @@ struct CarData {
 static volatile uint8_t mode1=0, mode2=0, mode3=0;
 
 static constexpr float WARN_TEMP_C = 105.0f;
-static constexpr float WARN_RPM    = 6000.0f;
 
 static uint32_t lp1=0, lp2=0, lp3=0;
 static void checkButtons(){
@@ -278,7 +278,9 @@ static void renderAvgMPG(const CarData& d){
   glowText("AVG MPG",120,130,1,C(255,255,255),C(60,60,60));
   spr.setTextSize(1); spr.setTextDatum(textdatum_t::middle_center);
   spr.setTextColor(C(50,80,50));
-  char buf[24]; snprintf(buf,sizeof(buf),"%d samples",avgMPGCnt);
+  char buf[24];
+  if(avgMPGCnt<1000) snprintf(buf,sizeof(buf),"%d samples",avgMPGCnt);
+  else               snprintf(buf,sizeof(buf),"%.1fk samples",avgMPGCnt/1000.0f);
   spr.drawString(buf,120,155);
   modeDots(2);
 }
@@ -357,18 +359,22 @@ void displayTask(void*){
     updateCenterSceneMotion(snap.speed_kph);
 
     bool warnTemp=snap.obd_ok&&snap.coolant_c>WARN_TEMP_C&&snap.rpm>400.0f;
-    bool warnRPM=snap.obd_ok&&snap.rpm>WARN_RPM;
     auto applyAlert=[&](){
-      if(warnRPM)       drawAlert("HIGH RPM",String((int)snap.rpm)+" rpm",C(200,80,0),TFT_WHITE);
-      else if(warnTemp) drawAlert("OVERHEAT",String((int)snap.coolant_c)+"C",C(220,0,0),TFT_WHITE);
+      if(warnTemp) drawAlert("OVERHEAT",String((int)snap.coolant_c)+"C",C(220,0,0),TFT_WHITE);
     };
 
-    // Update average MPG while driving
+    // Update average MPG while driving; persist to NVS every 300 samples
     {
       float mph2=snap.speed_kph*0.621371f;
       if(mph2>5.0f&&snap.maf_g_s>0.1f){
         float inst=constrain(snap.speed_kph*7.103f/snap.maf_g_s,0.0f,80.0f);
         if(inst>0){avgMPG=(avgMPGCnt==0)?inst:avgMPG*0.995f+inst*0.005f;avgMPGCnt++;}
+      }
+      static int lastSaved=0;
+      if(avgMPGCnt>0&&avgMPGCnt-lastSaved>=300){
+        Preferences p;p.begin("carcoach",false);
+        p.putFloat("avg_mpg",avgMPG);p.putInt("avg_cnt",avgMPGCnt);p.end();
+        lastSaved=avgMPGCnt;
       }
     }
 
@@ -393,6 +399,13 @@ void setup(){
   spr.setColorDepth(8);
   if(!spr.createSprite(240,240)){Serial.println("Sprite alloc failed!");while(true)delay(1000);}
   Serial.printf("Free heap: %d bytes\n",ESP.getFreeHeap());
+  { Preferences p;p.begin("carcoach",true);
+    float saved=p.getFloat("avg_mpg",0.0f);int savedCnt=p.getInt("avg_cnt",0);p.end();
+    if(saved>0.0f&&savedCnt>0){
+      avgMPG=saved;avgMPGCnt=min(savedCnt,5000);
+      Serial.printf("Loaded avg MPG: %.1f (%d samples)\n",avgMPG,avgMPGCnt);
+    }
+  }
   bootAnimation();
   dataMutex=xSemaphoreCreateMutex();
   xTaskCreatePinnedToCore(displayTask,"display",8192,nullptr,1,nullptr,1);
