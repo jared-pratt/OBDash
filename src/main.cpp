@@ -47,18 +47,26 @@ static void drawDialLabels(int cx, int cy, int radius, float minVal, float maxVa
 
 static SemaphoreHandle_t dataMutex;
 struct CarData {
-  float rpm, speed_kph, coolant_c, load_pct, throttle, iat_c, batt_v;
+  float rpm, speed_kph, coolant_c, load_pct, throttle, iat_c, batt_v, maf_g_s;
   int gear; bool obd_ok;
 } carData;
-static volatile uint8_t mode1=0, mode3=0;
+static volatile uint8_t mode1=0, mode2=0, mode3=0;
 
-static constexpr float READY_MIN_TEMP_C=60.0f;
-static constexpr float WARN_TEMP_C=105.0f;
-static constexpr float WARN_RPM=6000.0f;
-static uint32_t lp1=0, lp3=0;
+static constexpr float WARN_TEMP_C = 105.0f;
+static constexpr float WARN_RPM    = 6000.0f;
+
+static uint32_t lp1=0, lp2=0, lp3=0;
 static void checkButtons(){
+  static uint32_t lastPrint=0;
+  if(millis()-lastPrint>500){
+    Serial.printf("BTN1:%d BTN2:%d BTN3:%d modes: %d %d %d\n",
+                  digitalRead(BTN1_PIN),digitalRead(BTN2_PIN),digitalRead(BTN3_PIN),
+                  mode1,mode2,mode3);
+    lastPrint=millis();
+  }
   uint32_t n=millis();
   if(!digitalRead(BTN1_PIN)&&n-lp1>250){mode1=(mode1+1)%3;lp1=n;}
+  if(!digitalRead(BTN2_PIN)&&n-lp2>250){mode2=(mode2+1)%2;lp2=n;}
   if(!digitalRead(BTN3_PIN)&&n-lp3>250){mode3=(mode3+1)%3;lp3=n;}
 }
 
@@ -75,7 +83,7 @@ static void updateDemo(){
   int gear=0;
   if(mph>2){if(mph<12)gear=1;else if(mph<22)gear=2;else if(mph<35)gear=3;else if(mph<52)gear=4;else gear=5;}
   xSemaphoreTake(dataMutex,portMAX_DELAY);
-  carData={rpm,kph,cool,load,thr,iat,batt,gear,true};
+  carData={rpm,kph,cool,load,thr,iat,batt,0.0f,gear,true};
   xSemaphoreGive(dataMutex);
 }
 #endif
@@ -197,14 +205,19 @@ static void renderLoad(const CarData& d){
   glowText("ENGINE LOAD",120,135,1,C(200,100,0),C(50,20,0));
   modeDots(1);
 }
-static void renderIAT(const CarData& d){
-  spr.fillScreen(C(5,2,15));cornerDeco();
-  segArc(d.iat_c,0,80,30,0.5f,0.75f,C(255,40,0),C(230,180,0),C(255,0,180),C(25,15,35));
-  spr.drawCircle(120,120,87,C(220,20,0));
-  glowText(String((int)d.iat_c),108,100,3,C(255,40,0),C(80,0,0));
-  spr.drawCircle(140,87,4,C(255,40,0));
-  glowText("C",154,100,3,C(255,40,0),C(80,0,0));
-  glowText("INTAKE AIR",120,135,1,C(200,30,0),C(60,0,0));
+static void renderMPG(const CarData& d){
+  spr.fillScreen(C(5,2,15)); cornerDeco();
+  float mph=d.speed_kph*0.621371f;
+  float mpg=(mph>1.0f&&d.maf_g_s>0.1f)
+            ?constrain(d.speed_kph*7.103f/d.maf_g_s,0.0f,99.9f):0.0f;
+  segArc(mpg,0,50,30,0.2f,0.6f,C(220,0,0),C(230,180,0),C(0,200,80),C(25,15,35));
+  spr.drawCircle(120,120,87,C(0,190,60));
+  drawDialLabels(120,120,74,0,50,5,"",TFT_WHITE);
+  if(mph<1.0f||d.maf_g_s<0.1f)
+    glowText("--",120,100,3,C(80,80,80),C(20,20,20));
+  else
+    glowText(String((int)mpg),120,100,3,C(0,210,80),C(0,55,20));
+  glowText("MPG",120,130,1,C(0,180,60),C(0,40,15));
   modeDots(2);
 }
 static void renderSystems(const CarData& d){
@@ -239,25 +252,39 @@ static void renderVoltage(const CarData& d){
   glowText("BATTERY",120,135,1,C(200,40,0),C(60,0,0));
   modeDots(1);
 }
-static void renderRaw(const CarData& d){
-  spr.fillScreen(C(5,2,15));cornerDeco();
-  uint32_t gc=C(220,0,0),dc=C(80,0,0);spr.setTextSize(1);
-  struct Row{const char* lbl;String val;};
-  Row rows[]={{"RPM  ",String((int)d.rpm)},{"SPD  ",String((int)d.speed_kph)+" k"},
-    {"COOL ",String((int)d.coolant_c)+" C"},{"LOAD ",String((int)d.load_pct)+"%"},
-    {"THR  ",String((int)d.throttle)+"%"},{"IAT  ",String((int)d.iat_c)+" C"},
-    {"BATT ",String(d.batt_v,2)+"V"}};
-  int y=36;
-  for(auto& r:rows){
-    spr.setTextColor(dc);spr.setTextDatum(textdatum_t::middle_left);spr.drawString(r.lbl,28,y);
-    spr.setTextColor(gc);spr.setTextDatum(textdatum_t::middle_right);spr.drawString(r.val,212,y);
-    y+=22;
-  }
+static void renderThrottle(const CarData& d){
+  spr.fillScreen(C(5,2,15)); cornerDeco();
+  segArc(d.throttle,0,100,30,0.5f,0.8f,C(0,180,220),C(230,180,0),C(220,0,0),C(25,15,35));
+  spr.drawCircle(120,120,87,C(0,160,200));
+  drawDialLabels(120,120,74,0,100,5,"",TFT_WHITE);
+  glowText(String((int)d.throttle)+"%",120,100,3,C(0,180,220),C(0,40,60));
+  glowText("THROTTLE",120,135,1,C(0,150,190),C(0,30,50));
+  modeDots(1);
+}
+
+static float avgMPG=0.0f;
+static int   avgMPGCnt=0;
+
+static void renderAvgMPG(const CarData& d){
+  spr.fillScreen(C(5,2,15)); cornerDeco();
+  float display=constrain(avgMPG,0.0f,50.0f);
+  segArc(display,0,50,30,0.2f,0.6f,C(220,0,0),C(230,180,0),C(0,200,80),C(25,15,35));
+  spr.drawCircle(120,120,87,C(0,180,60));
+  drawDialLabels(120,120,74,0,50,5,"",TFT_WHITE);
+  if(avgMPGCnt==0)
+    glowText("--",120,95,3,C(80,80,80),C(20,20,20));
+  else
+    glowText(String((int)avgMPG),120,95,3,C(0,200,80),C(0,50,20));
+  glowText("AVG MPG",120,130,1,C(0,160,50),C(0,35,15));
+  spr.setTextSize(1); spr.setTextDatum(textdatum_t::middle_center);
+  spr.setTextColor(C(50,80,50));
+  char buf[24]; snprintf(buf,sizeof(buf),"%d samples",avgMPGCnt);
+  spr.drawString(buf,120,155);
   modeDots(2);
 }
 
 static void bootAnimation(){
-  const int carY=103, roadY=162, step=22;
+  const int carY=103, roadY=162, step=50;
   lgfx::LGFX_Device* disps[3]={&disp1,&disp2,&disp3};
   for(int vx=-(int)COROLLA_W;vx<=720;vx+=step){
     for(int d=0;d<3;d++){
@@ -314,7 +341,7 @@ void obdTask(void*){
     int gear=confirmedGear;
     xSemaphoreTake(dataMutex,portMAX_DELAY);
     carData={obd.rpm,obd.speed_kph,obd.coolant_c,obd.load_pct,
-             obd.throttle,obd.iat_c,obd.batt_v,gear,true};
+             obd.throttle,obd.iat_c,obd.batt_v,obd.maf_g_s,gear,true};
     xSemaphoreGive(dataMutex);
   }
 }
@@ -329,20 +356,27 @@ void displayTask(void*){
     xSemaphoreTake(dataMutex,portMAX_DELAY);snap=carData;xSemaphoreGive(dataMutex);
     updateCenterSceneMotion(snap.speed_kph);
 
-    bool readyToDrive=snap.obd_ok&&snap.coolant_c>=READY_MIN_TEMP_C&&snap.rpm>400.0f&&snap.speed_kph<3.0f;
     bool warnTemp=snap.obd_ok&&snap.coolant_c>WARN_TEMP_C&&snap.rpm>400.0f;
     bool warnRPM=snap.obd_ok&&snap.rpm>WARN_RPM;
     auto applyAlert=[&](){
-      if(warnRPM)           drawAlert("HIGH RPM",String((int)snap.rpm)+" rpm",C(200,80,0),TFT_WHITE);
-      else if(warnTemp)     drawAlert("OVERHEAT",String((int)snap.coolant_c)+"C",C(220,0,0),TFT_WHITE);
-      else if(readyToDrive) drawAlert("Ready to","drive.",C(0,180,60),TFT_BLACK);
+      if(warnRPM)       drawAlert("HIGH RPM",String((int)snap.rpm)+" rpm",C(200,80,0),TFT_WHITE);
+      else if(warnTemp) drawAlert("OVERHEAT",String((int)snap.coolant_c)+"C",C(220,0,0),TFT_WHITE);
     };
 
-    switch(mode1){case 0:renderRPM(snap);break;case 1:renderLoad(snap);break;case 2:renderIAT(snap);break;}
+    // Update average MPG while driving
+    {
+      float mph2=snap.speed_kph*0.621371f;
+      if(mph2>5.0f&&snap.maf_g_s>0.1f){
+        float inst=constrain(snap.speed_kph*7.103f/snap.maf_g_s,0.0f,80.0f);
+        if(inst>0){avgMPG=(avgMPGCnt==0)?inst:avgMPG*0.995f+inst*0.005f;avgMPGCnt++;}
+      }
+    }
+
+    switch(mode1){case 0:renderRPM(snap);break;case 1:renderLoad(snap);break;case 2:renderMPG(snap);break;}
     applyAlert(); spr.pushSprite(&disp1,0,0);
-    renderCorollaScene(snap);
+    switch(mode2){case 0:renderCorollaScene(snap);break;case 1:renderThrottle(snap);break;}
     applyAlert(); spr.pushSprite(&disp2,0,0);
-    switch(mode3){case 0:renderSystems(snap);break;case 1:renderVoltage(snap);break;case 2:renderRaw(snap);break;}
+    switch(mode3){case 0:renderSystems(snap);break;case 1:renderVoltage(snap);break;case 2:renderAvgMPG(snap);break;}
     applyAlert(); spr.pushSprite(&disp3,0,0);
     vTaskDelay(pdMS_TO_TICKS(33));
   }
