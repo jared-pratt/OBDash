@@ -254,10 +254,13 @@ static void renderVoltage(const CarData& d){
 }
 static void renderThrottle(const CarData& d){
   spr.fillScreen(C(5,2,15)); cornerDeco();
-  segArc(d.throttle,0,100,30,0.5f,0.8f,C(0,180,220),C(230,180,0),C(220,0,0),C(25,15,35));
+  // PID 0x11 reads ~16% at closed throttle; subtract idle offset and rescale to 0-100
+  static constexpr float THROTTLE_IDLE = 16.0f;
+  float eff=constrain((d.throttle-THROTTLE_IDLE)*(100.0f/(100.0f-THROTTLE_IDLE)),0.0f,100.0f);
+  segArc(eff,0,100,30,0.5f,0.8f,C(0,180,220),C(230,180,0),C(220,0,0),C(25,15,35));
   spr.drawCircle(120,120,87,C(0,160,200));
   drawDialLabels(120,120,74,0,100,5,"",TFT_WHITE);
-  glowText(String((int)d.throttle)+"%",120,100,3,C(255,255,255),C(60,60,60));
+  glowText(String((int)eff)+"%",120,100,3,C(255,255,255),C(60,60,60));
   glowText("THROTTLE",120,135,1,C(255,255,255),C(60,60,60));
   modeDots(1);
 }
