@@ -31,8 +31,8 @@ public:
     return connected;
   }
 
-  // flags bits: 0=RPM 1=speed 2=coolant 3=load 4=throttle 5=MAF
-  void pollAll(uint8_t flags=0x3F){
+  // flags bits: 0=RPM 1=speed 2=coolant 3=load 4=throttle 5=MAF 6=battery
+  void pollAll(uint8_t flags=0x7F){
     if(!connected)return;
     float v;
     if((flags&0x01)&&_readPID(0x0C,v))rpm=v;
@@ -41,17 +41,7 @@ public:
     if((flags&0x08)&&_readPID(0x04,v))load_pct=v;
     if((flags&0x10)&&_readPID(0x11,v))throttle=v;
     if((flags&0x20)&&_readPID(0x10,v))maf_g_s=v;
-  }
-
-  // Read battery voltage via ELM327 ATRV (pin 16, direct measurement — no ECU needed)
-  bool pollBattery(){
-    if(!connected)return false;
-    String r=_cmd("ATRV\r",500);
-    r.replace("V","");r.replace("v","");r.trim();
-    if(!r.length())return false;
-    float v=r.toFloat();
-    if(v>8.0f&&v<20.0f){batt_v=v;return true;}
-    return false;
+    if((flags&0x40)&&_readPID(0x42,v))batt_v=v;
   }
 
 private:

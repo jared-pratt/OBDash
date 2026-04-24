@@ -335,8 +335,8 @@ void obdTask(void*){
     if(mode1==2||mode3==2) flags|=0x20;          // MAF (MPG screens)
     if(mode2==1)           flags|=0x10;          // throttle
     if(mode3==0)           flags|=0x04;          // coolant
+    if(millis()-lastBatt>10000){flags|=0x40;lastBatt=millis();} // battery (0x42) every 10s
     obd.pollAll(flags);
-    if(millis()-lastBatt>10000){obd.pollBattery();lastBatt=millis();} // ATRV every 10s
 
     static int confirmedGear=0,pendingGear=0,pendingCount=0;
     float mph=obd.speed_kph*0.621371f;
