@@ -20,8 +20,9 @@
 #define DEMO_MODE   0
 
 // ── 2006 Toyota Corolla CE — C60 MT gear ratios ──────────────────────
-// Stock 185/65/R15 → 1952 mm circ. Actual 215/45/R17 → 1964 mm circ.
-// Larger tires rotate fewer times/km so ECU under-reads; multiply to correct.
-#define SPEED_CORRECTION  (1964.0f / 1952.0f)
+// Speed correction: OBD 0x0D matches the car speedometer, which under-reads
+// with larger tires. Tune this until display matches GPS at highway speed.
+// 1.025 ≈ corrects ~1.5 mph low at 60 mph.
+#define SPEED_CORRECTION  1.025f
 static const float GEAR_RATIOS[] = { 15.26f, 8.25f, 5.65f, 4.43f, 3.54f };
 #define NUM_GEARS  5
