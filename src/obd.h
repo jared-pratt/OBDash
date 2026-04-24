@@ -38,6 +38,7 @@ public:
     if(_readPID(0x0D,v))speed_kph=v;
     if(_readPID(0x05,v))coolant_c=v;
     if(_readPID(0x04,v))load_pct=v;
+    if(_readPID(0x11,v))throttle=v;
     if(_readPID(0x10,v))maf_g_s=v;
   }
 
