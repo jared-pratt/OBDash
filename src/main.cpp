@@ -340,7 +340,7 @@ void obdTask(void*){
     else                {pendingGear=raw;pendingCount=0;}
     int gear=confirmedGear;
     xSemaphoreTake(dataMutex,portMAX_DELAY);
-    carData={obd.rpm,obd.speed_kph,obd.coolant_c,obd.load_pct,
+    carData={obd.rpm,obd.speed_kph*SPEED_CORRECTION,obd.coolant_c,obd.load_pct,
              obd.throttle,obd.iat_c,obd.batt_v,obd.maf_g_s,gear,true};
     xSemaphoreGive(dataMutex);
   }

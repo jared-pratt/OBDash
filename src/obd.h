@@ -38,7 +38,7 @@ public:
     if(_readPID(0x0D,v))speed_kph=v;
     if(_readPID(0x05,v))coolant_c=v;
     if(_readPID(0x04,v))load_pct=v;
-    if(_readPID(0x11,v))throttle=v;
+    if(_readPID(0x45,v))throttle=v;
     if(_readPID(0x10,v))maf_g_s=v;
   }
 
@@ -165,6 +165,7 @@ private:
       case 0x0F:return A-40.0f;
       case 0x10:return(float)((A<<8)|B)/100.0f;
       case 0x11:return A*100.0f/255.0f;
+      case 0x45:return A*100.0f/255.0f;
       case 0x42:return(float)(((A<<8)|B))/1000.0f;
       default:  return(float)A;
     }
