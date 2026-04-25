@@ -99,8 +99,7 @@ private:
 
   bool _init(){
     struct Cmd{const char* txt;uint32_t ms;};
-    // ATST 19 = 25×4ms = 100ms ECU response timeout (default ~200ms); speeds up NO DATA responses
-    Cmd cmds[]={{"ATZ\r",2500},{"ATE0\r",800},{"ATL0\r",800},{"ATS0\r",800},{"ATH0\r",800},{"ATST 19\r",500},{"ATSP0\r",1500}};
+    Cmd cmds[]={{"ATZ\r",2500},{"ATE0\r",800},{"ATL0\r",800},{"ATS0\r",800},{"ATH0\r",800},{"ATSP0\r",1500}};
     for(auto& c:cmds){
       String r=_cmd(c.txt,c.ms);
       if(r.length()==0&&strcmp(c.txt,"ATZ\r")!=0){
@@ -120,7 +119,7 @@ private:
 
   bool _readPID(uint8_t pid,float& out){
     char buf[8];snprintf(buf,sizeof(buf),"01%02X\r",pid);
-    String resp=_cmd(buf,150);
+    String resp=_cmd(buf,250);
     if(!resp.length())return false;
     if(resp.indexOf("NO DATA")>=0||resp.indexOf("UNABLE")>=0||
        resp.indexOf("STOPPED")>=0||resp.indexOf("?")>=0)return false;
